@@ -2,6 +2,7 @@ export type ActiveTab = 'private' | 'community';
 
 export interface AccessCard {
   id: string;
+  communityMemberId?: string;
   ownerName: string;
   accountTitle: string;
   emailOrUser: string;

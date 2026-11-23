@@ -244,15 +244,19 @@ export default function App() {
         setCommunityMembers(mapped);
         setIsCommunityLoading(false);
 
-        try {
-          const countQuery = query(
-            collection(db, 'community_members'),
-            where('createdAt', '>=', Timestamp.fromMillis(0))
-          );
-          const countSnap = await getCountFromServer(countQuery);
-          setTotalRegistered(Math.max(mapped.length, countSnap.data().count));
-        } catch {
+        if (mapped.length < 200) {
           setTotalRegistered(mapped.length);
+        } else {
+          try {
+            const countQuery = query(
+              collection(db, 'community_members'),
+              where('createdAt', '>=', Timestamp.fromMillis(0))
+            );
+            const countSnap = await getCountFromServer(countQuery);
+            setTotalRegistered(countSnap.data().count);
+          } catch {
+            setTotalRegistered(mapped.length);
+          }
         }
       },
       (error) => {
@@ -288,10 +292,12 @@ export default function App() {
 
     const nowIso = new Date().toISOString();
     const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const memberId = `member_${uniqueId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
 
     // 1. Save full card ONLY to user's private LocalStorage
     const newCard: AccessCard = {
       id: uniqueId,
+      communityMemberId: memberId,
       ownerName: trimmedName,
       accountTitle: trimmedTitle,
       emailOrUser: trimmedEmail,
@@ -305,7 +311,6 @@ export default function App() {
     savePrivateCards(updatedCards);
 
     // 2. Publish ONLY public Nick + serverTimestamp to Firestore (never email/password)
-    const memberId = `member_${uniqueId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
     const memberPath = `community_members/${memberId}`;
     try {
       await setDoc(doc(db, 'community_members', memberId), {
@@ -356,12 +361,30 @@ export default function App() {
     }
   };
 
-  const handleDeleteCard = (cardId: string) => {
+  const handleDeleteCard = async (cardId: string) => {
+    const targetCard = privateCards.find((c) => c.id === cardId);
     const updated = privateCards.filter((c) => c.id !== cardId);
     setPrivateCards(updated);
     savePrivateCards(updated);
     setConfirmDeleteId(null);
-    showToast('Cartão removido do seu dispositivo.');
+
+    if (targetCard && !targetCard.id.startsWith('shared-')) {
+      const memberId =
+        targetCard.communityMemberId ||
+        `member_${targetCard.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+      const memberPath = `community_members/${memberId}`;
+      try {
+        await deleteDoc(doc(db, 'community_members', memberId));
+        showToast('Acesso excluído e removido da lista de registros!');
+      } catch (error) {
+        showToast(
+          'Cartão excluído do dispositivo, mas houve um erro ao remover da lista pública.'
+        );
+        handleFirestoreError(error, OperationType.DELETE, memberPath);
+      }
+    } else {
+      showToast('Cartão removido do seu dispositivo.');
+    }
   };
 
   const handleExitReveal = () => {

@@ -51,7 +51,8 @@ service cloud.firestore {
       allow get: if isValidId(memberId);
       allow list: if resource.data.createdAt >= timestamp.date(1970, 1, 1);
       allow create: if isValidId(memberId) && isValidCommunityMember(incoming());
-      allow update, delete: if false;
+      allow update: if false;
+      allow delete: if isValidId(memberId);
     }
 
     // Real-time Active Presence Sessions
