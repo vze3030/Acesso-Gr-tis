@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   KeyRound,
   Lock,
@@ -15,6 +15,21 @@ import {
   UserCheck,
   FileText,
 } from 'lucide-react';
+import {
+  collection,
+  deleteDoc,
+  doc,
+  getCountFromServer,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  Timestamp,
+  where,
+} from 'firebase/firestore';
+import { db, handleFirestoreError, OperationType } from './firebase';
 import { AccessCard, ActiveTab, CommunityMember, SharePayload } from './types';
 import {
   decodeSharePayload,
@@ -27,12 +42,31 @@ import { RevealView } from './components/RevealView';
 import { CommunityTab } from './components/CommunityTab';
 
 const ACCOUNT_PRESETS = ['Facebook', 'Instagram', 'WhatsApp', 'E-mail'];
+const PRESENCE_WINDOW_MS = 55_000;
+const PRESENCE_HEARTBEAT_MS = 20_000;
+const SESSION_STORAGE_KEY = 'acesso_gratis_session_id';
 
-interface ServerCommunityState {
-  type?: 'state';
-  onlineCount: number;
-  totalRegistered: number;
-  members: CommunityMember[];
+interface PresenceEntry {
+  id: string;
+  lastSeenMs: number;
+}
+
+function getOrCreateSessionId(): string {
+  try {
+    const existing = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (existing && /^[a-zA-Z0-9_-]{8,64}$/.test(existing)) {
+      return existing;
+    }
+    const randomPart =
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID().replace(/[^a-zA-Z0-9_-]/g, '')
+        : `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    const nextId = `tab_${randomPart}`.slice(0, 64);
+    sessionStorage.setItem(SESSION_STORAGE_KEY, nextId);
+    return nextId;
+  } catch {
+    return `tab_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  }
 }
 
 function extractRevealHash(hash: string): string | null {
@@ -53,12 +87,14 @@ export default function App() {
     loadPrivateCards()
   );
 
-  // Real server-synced community state (no fake numbers or simulated timers)
+  // Real Firestore-synced community & presence state
   const [communityMembers, setCommunityMembers] = useState<CommunityMember[]>([]);
   const [onlineCount, setOnlineCount] = useState<number | null>(null);
   const [totalRegistered, setTotalRegistered] = useState<number | null>(null);
   const [isCommunityLoading, setIsCommunityLoading] = useState<boolean>(true);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+
+  const presenceEntriesRef = useRef<PresenceEntry[]>([]);
 
   // Form state
   const [ownerName, setOwnerName] = useState('');
@@ -96,98 +132,143 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
-  const applyServerState = useCallback((data: ServerCommunityState) => {
-    if (typeof data.onlineCount === 'number') {
-      setOnlineCount(data.onlineCount);
-    }
-    if (typeof data.totalRegistered === 'number') {
-      setTotalRegistered(data.totalRegistered);
-    }
-    if (Array.isArray(data.members)) {
-      setCommunityMembers(data.members);
-    }
-    setIsCommunityLoading(false);
-  }, []);
-
-  // Fetch initial real state & maintain real-time WebSocket presence connection
+  // 1. Real-Time Online Presence via Firestore (works in AI Studio, GitHub, and Vercel)
   useEffect(() => {
+    const sessionId = getOrCreateSessionId();
+    const presenceDocRef = doc(db, 'presence', sessionId);
+    const presencePath = `presence/${sessionId}`;
     let isDisposed = false;
-    let socket: WebSocket | null = null;
-    let reconnectTimer: number | null = null;
-    let reconnectAttempt = 0;
 
-    const fetchInitialCommunity = async () => {
-      try {
-        const res = await fetch('/api/community');
-        if (!res.ok) return;
-        const data = (await res.json()) as ServerCommunityState;
-        if (!isDisposed) {
-          applyServerState(data);
-        }
-      } catch {
-        if (!isDisposed) {
-          setIsCommunityLoading(false);
-        }
-      }
+    const recomputeOnlineCount = () => {
+      const cutoff = Date.now() - PRESENCE_WINDOW_MS;
+      const activeSessions = presenceEntriesRef.current.filter(
+        (entry) => entry.lastSeenMs >= cutoff || entry.id === sessionId
+      );
+      setOnlineCount(Math.max(1, activeSessions.length));
     };
 
-    const connectWebSocket = () => {
+    const sendHeartbeat = async () => {
       if (isDisposed) return;
-      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-
       try {
-        socket = new WebSocket(wsUrl);
-      } catch {
-        return;
+        await setDoc(presenceDocRef, {
+          active: true,
+          lastSeen: serverTimestamp(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.WRITE, presencePath);
       }
-
-      socket.onopen = () => {
-        reconnectAttempt = 0;
-      };
-
-      socket.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data) as ServerCommunityState;
-          if (payload && payload.type === 'state' && !isDisposed) {
-            applyServerState(payload);
-          }
-        } catch {
-          // Ignore malformed frames
-        }
-      };
-
-      socket.onclose = () => {
-        if (isDisposed) return;
-        const delayMs = Math.min(10000, 1000 * Math.pow(2, reconnectAttempt));
-        reconnectAttempt += 1;
-        reconnectTimer = window.setTimeout(connectWebSocket, delayMs);
-      };
-
-      socket.onerror = () => {
-        socket?.close();
-      };
     };
 
-    fetchInitialCommunity();
-    connectWebSocket();
+    const removePresence = () => {
+      deleteDoc(presenceDocRef).catch(() => {
+        // Best effort on page unload; stale sessions expire after PRESENCE_WINDOW_MS
+      });
+    };
+
+    sendHeartbeat();
+
+    const heartbeatTimer = window.setInterval(sendHeartbeat, PRESENCE_HEARTBEAT_MS);
+    const expirationTimer = window.setInterval(recomputeOnlineCount, 10_000);
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        sendHeartbeat();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', removePresence);
+
+    const presenceQuery = query(
+      collection(db, 'presence'),
+      where('lastSeen', '>=', Timestamp.fromMillis(0)),
+      orderBy('lastSeen', 'desc'),
+      limit(200)
+    );
+
+    const unsubscribePresence = onSnapshot(
+      presenceQuery,
+      (snapshot) => {
+        const nowMs = Date.now();
+        presenceEntriesRef.current = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+          const lastSeen = data.lastSeen as Timestamp | null | undefined;
+          return {
+            id: docSnap.id,
+            lastSeenMs: lastSeen ? lastSeen.toMillis() : nowMs,
+          };
+        });
+        recomputeOnlineCount();
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'presence');
+      }
+    );
 
     return () => {
       isDisposed = true;
-      if (reconnectTimer !== null) {
-        window.clearTimeout(reconnectTimer);
-      }
-      if (socket && socket.readyState <= WebSocket.OPEN) {
-        socket.close();
-      }
+      window.clearInterval(heartbeatTimer);
+      window.clearInterval(expirationTimer);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', removePresence);
+      unsubscribePresence();
+      removePresence();
     };
-  }, [applyServerState]);
+  }, []);
+
+  // 2. Real-Time Registered Community Members via Firestore
+  useEffect(() => {
+    const membersQuery = query(
+      collection(db, 'community_members'),
+      where('createdAt', '>=', Timestamp.fromMillis(0)),
+      orderBy('createdAt', 'desc'),
+      limit(200)
+    );
+
+    const unsubscribeMembers = onSnapshot(
+      membersQuery,
+      async (snapshot) => {
+        const mapped: CommunityMember[] = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+          const createdAt = data.createdAt as Timestamp | null | undefined;
+          return {
+            id: docSnap.id,
+            nick: typeof data.nick === 'string' ? data.nick : 'Membro',
+            registeredAt: createdAt
+              ? createdAt.toDate().toISOString()
+              : new Date().toISOString(),
+            verified: Boolean(data.verified),
+          };
+        });
+
+        setCommunityMembers(mapped);
+        setIsCommunityLoading(false);
+
+        try {
+          const countQuery = query(
+            collection(db, 'community_members'),
+            where('createdAt', '>=', Timestamp.fromMillis(0))
+          );
+          const countSnap = await getCountFromServer(countQuery);
+          setTotalRegistered(Math.max(mapped.length, countSnap.data().count));
+        } catch {
+          setTotalRegistered(mapped.length);
+        }
+      },
+      (error) => {
+        setIsCommunityLoading(false);
+        handleFirestoreError(error, OperationType.LIST, 'community_members');
+      }
+    );
+
+    return () => unsubscribeMembers();
+  }, []);
 
   const handleSaveCard = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmitting) return;
 
-    const trimmedName = ownerName.trim();
+    const trimmedName = ownerName.trim().slice(0, 80);
     const trimmedTitle = accountTitle.trim() || 'Facebook';
     const trimmedEmail = emailOrUser.trim();
     const trimmedPassword = password;
@@ -223,33 +304,23 @@ export default function App() {
     setPrivateCards(updatedCards);
     savePrivateCards(updatedCards);
 
-    // 2. Send ONLY public Nick + timestamp to the server database (never email/password)
+    // 2. Publish ONLY public Nick + serverTimestamp to Firestore (never email/password)
+    const memberId = `member_${uniqueId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+    const memberPath = `community_members/${memberId}`;
     try {
-      const res = await fetch('/api/members', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: `member-${uniqueId}`,
-          nick: trimmedName,
-          registeredAt: nowIso,
-        }),
+      await setDoc(doc(db, 'community_members', memberId), {
+        nick: trimmedName,
+        verified: true,
+        createdAt: serverTimestamp(),
       });
-
-      if (res.ok) {
-        const data = (await res.json()) as ServerCommunityState;
-        applyServerState(data);
-        showToast(
-          `Cartão salvo no seu dispositivo! "${trimmedName}" registrado na comunidade.`
-        );
-      } else {
-        showToast(
-          'Cartão salvo no seu dispositivo, mas não foi possível registrar na comunidade agora.'
-        );
-      }
-    } catch {
       showToast(
-        'Cartão salvo no seu dispositivo. Sem conexão com o servidor para o mural público.'
+        `Cartão salvo no seu dispositivo! "${trimmedName}" registrado na comunidade.`
       );
+    } catch (error) {
+      showToast(
+        'Cartão salvo no dispositivo, mas houve um erro ao registrar na comunidade.'
+      );
+      handleFirestoreError(error, OperationType.CREATE, memberPath);
     } finally {
       setIsSubmitting(false);
     }
@@ -366,7 +437,7 @@ export default function App() {
       {/* Real-Time Social Proof Status Bar */}
       <div className="border-b border-[#DADDE1] bg-white">
         <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-2.5">
-          {/* Indicator 1: Real Online Agora via active WebSocket connections */}
+          {/* Indicator 1: Real Online Agora via Firestore presence */}
           <div className="flex items-center gap-2.5">
             <span className="relative flex h-2.5 w-2.5 shrink-0" aria-hidden="true">
               {onlineCount !== null && onlineCount > 0 && (
@@ -388,7 +459,7 @@ export default function App() {
             </span>
           </div>
 
-          {/* Indicator 2: Real Total de Registrados from persistent database */}
+          {/* Indicator 2: Real Total de Registrados via Firestore */}
           <div className="flex items-center gap-2">
             <UserCheck
               className="h-4 w-4 shrink-0 text-[#1877F2]"
@@ -843,7 +914,7 @@ export default function App() {
                               </div>
                             </div>
 
-                            {/* Optional Notes */}
+                            {/* Optional Notes (for older saved cards) */}
                             {card.notes && (
                               <div className="flex items-start gap-2 rounded-lg bg-[#F7F8FA] px-3 py-2 text-xs text-[#4B4F56]">
                                 <FileText

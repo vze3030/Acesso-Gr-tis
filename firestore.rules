@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 3 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Blueprint Validation Helpers
+    function isValidCommunityMember(data) {
+      return data.keys().hasAll(['nick', 'verified', 'createdAt'])
+        && data.keys().hasOnly(['nick', 'verified', 'createdAt'])
+        && data.nick is string
+        && data.nick.size() >= 1
+        && data.nick.size() <= 80
+        && data.verified is bool
+        && data.verified == true
+        && data.createdAt == request.time;
+    }
+
+    function isValidPresenceSession(data) {
+      return data.keys().hasAll(['active', 'lastSeen'])
+        && data.keys().hasOnly(['active', 'lastSeen'])
+        && data.active is bool
+        && data.active == true
+        && data.lastSeen == request.time;
+    }
+
+    // Health check document for connection validation
+    match /test/connection {
+      allow get: if true;
+      allow list, create, update, delete: if false;
+    }
+
+    // Public Community Wall (strictly public nick + server timestamp; never email/password)
+    match /community_members/{memberId} {
+      allow get: if isValidId(memberId);
+      allow list: if resource.data.createdAt >= timestamp.date(1970, 1, 1);
+      allow create: if isValidId(memberId) && isValidCommunityMember(incoming());
+      allow update, delete: if false;
+    }
+
+    // Real-time Active Presence Sessions
+    match /presence/{sessionId} {
+      allow get: if isValidId(sessionId);
+      allow list: if resource.data.lastSeen >= timestamp.date(1970, 1, 1);
+      allow create: if isValidId(sessionId) && isValidPresenceSession(incoming());
+      allow update: if isValidId(sessionId)
+        && isValidPresenceSession(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly(['active', 'lastSeen']);
+      allow delete: if isValidId(sessionId);
+    }
+  }
+}

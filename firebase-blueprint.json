@@ -1,0 +1,54 @@
+{
+  "entities": {
+    "CommunityMember": {
+      "title": "CommunityMember",
+      "description": "Public community wall registration entry containing only the public nickname, verification flag, and server timestamp (never email or password).",
+      "type": "object",
+      "properties": {
+        "nick": {
+          "type": "string",
+          "description": "Public display name, nickname, or handle of the registered user.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "verified": {
+          "type": "boolean",
+          "description": "Indicates the community registration entry is verified."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server-validated Firestore timestamp of registration."
+        }
+      },
+      "required": ["nick", "verified", "createdAt"]
+    },
+    "PresenceSession": {
+      "title": "PresenceSession",
+      "description": "Ephemeral active visitor heartbeat document used to compute the real-time Online Agora counter.",
+      "type": "object",
+      "properties": {
+        "active": {
+          "type": "boolean",
+          "description": "Whether the browser tab session is currently active."
+        },
+        "lastSeen": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server-validated timestamp of the latest heartbeat."
+        }
+      },
+      "required": ["active", "lastSeen"]
+    }
+  },
+  "firestore": {
+    "/community_members/{memberId}": {
+      "schema": { "$ref": "#/entities/CommunityMember" },
+      "description": "Public list of registered community members (public nick and timestamp only)."
+    },
+    "/presence/{sessionId}": {
+      "schema": { "$ref": "#/entities/PresenceSession" },
+      "description": "Active visitor sessions for real-time online presence tracking."
+    }
+  }
+}
