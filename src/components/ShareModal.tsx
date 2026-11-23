@@ -165,7 +165,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#1877F2] hover:text-[#166FE5] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1877F2] rounded"
             >
               <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>Visualizar tela de revelação agora</span>
+              <span>Visualizar tela de acesso agora</span>
             </button>
             <button
               type="button"
