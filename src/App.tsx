@@ -41,7 +41,7 @@ import { ShareModal } from './components/ShareModal';
 import { RevealView } from './components/RevealView';
 import { CommunityTab } from './components/CommunityTab';
 
-const ACCOUNT_PRESETS = ['Facebook', 'Instagram', 'WhatsApp', 'E-mail'];
+const ACCOUNT_PRESETS = ['Facebook'];
 const PRESENCE_WINDOW_MS = 55_000;
 const PRESENCE_HEARTBEAT_MS = 20_000;
 const SESSION_STORAGE_KEY = 'acesso_gratis_session_id';
