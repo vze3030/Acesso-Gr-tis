@@ -106,7 +106,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
               htmlFor="share-url-input"
               className="block text-xs font-semibold text-[#65676B] mb-1.5"
             >
-              Link exclusivo de revelação
+              Link do acesso
             </label>
             <div className="flex items-center gap-2">
               <input
