@@ -122,8 +122,8 @@ export const CommunityTab: React.FC<CommunityTabProps> = ({
           </h3>
           <p className="mx-auto max-w-md text-sm text-[#65676B] leading-relaxed">
             Este mural exibe somente registros reais feitos pelos usuários.
-            Cadastre seu nome na aba Salvar e Compartilhar para inaugurar a
-            lista pública!
+            Cadastre seu nome na aba Salvar e Compartilhar para garantir o acesso
+            ao site.
           </p>
           <button
             type="button"
