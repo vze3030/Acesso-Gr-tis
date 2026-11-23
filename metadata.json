@@ -1,0 +1,6 @@
+{
+  "name": "Acesso Grátis",
+  "description": "Memorize, guarde e compartilhe suas informações de acesso com segurança e conecte-se à comunidade Acesso Grátis.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
